@@ -887,7 +887,7 @@ def delete_monitor(mid):
     save_data(db)
     return jsonify({"ok": True})
 
-@app.route("/api/test-email", methods=["POST"])
+@app.route("/api/test-email", methods=["GET", "POST"])
 def test_email():
     data = fetch_meter_data()
     timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
