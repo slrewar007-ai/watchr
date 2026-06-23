@@ -660,7 +660,7 @@ def send_email(subject, html_body):
             },
             json={
                 "from": EMAIL_SENDER,
-                "to": [EMAIL_RECEIVER, "Prakashbuldak99118@gmail.com"],
+                "to": [EMAIL_RECEIVER],
                 "subject": subject,
                 "html": html_body
             },
