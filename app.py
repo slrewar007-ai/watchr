@@ -631,7 +631,7 @@ app = Flask(__name__)
 # ── Config ──
 RESEND_API_KEY = "re_ZxbTs63r_Q588n3YBBwW6QsJQLdQHF9HV"
 EMAIL_SENDER   = "onboarding@resend.dev"
-EMAIL_RECEIVER = "rewarshyam456@gmail.com"
+EMAIL_RECEIVER = "slrewar007@gmail.com"
 METER_URL      = "https://tgnpdcl.bestinfra.app/mdm/ModemDetails.jsp?modem_sl_no=TGNP00106"
 
 DATA_FILE = "monitors.json"
