@@ -650,10 +650,9 @@ def save_data(data):
         json.dump(data, f, indent=2)
 
 db = load_data()
-
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
 
-# ── Send Email ──
+# ── Send Email via port 587 TLS ──
 def send_email(subject, html_body):
     try:
         msg = MIMEMultipart("alternative")
@@ -661,11 +660,24 @@ def send_email(subject, html_body):
         msg["From"]    = EMAIL_SENDER
         msg["To"]      = EMAIL_RECEIVER
         msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-            s.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            s.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
-        print(f"[EMAIL OK] {subject}")
-        return True
+        # Try port 587 (STARTTLS) first
+        try:
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as s:
+                s.ehlo()
+                s.starttls()
+                s.ehlo()
+                s.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                s.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+            print(f"[EMAIL OK 587] {subject}")
+            return True
+        except Exception as e1:
+            print(f"[EMAIL 587 FAILED] {e1} — trying 465...")
+            # Fallback port 465
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+                s.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                s.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+            print(f"[EMAIL OK 465] {subject}")
+            return True
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return False
@@ -685,10 +697,9 @@ def fetch_meter_data():
                     rows[key] = val
         if not rows:
             rows["Note"] = "Page loaded but no table data found"
-            rows["Raw"] = soup.get_text()[:300]
         return rows
     except Exception as e:
-        return {"Error": str(e), "Time": datetime.now().isoformat()}
+        return {"Error": str(e)}
 
 # ── Build Email HTML ──
 def build_email_html(data, timestamp):
@@ -703,73 +714,54 @@ def build_email_html(data, timestamp):
     ]
     rows_html = ""
     shown = set()
-    # Important rows first with highlight
     for key in important:
         if key in data:
             val = data[key]
             bg = "#fff8e1" if "Alert" in key else "#f0fdf4" if any(x in key for x in ["kWh","kVA","kVAr"]) else "#ffffff"
-            bold = "font-weight:600;" if key in ["kWh(I)", "Meter Date & Time", "Latest Alert"] else ""
-            rows_html += f'''<tr style="background:{bg}">
-                <td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#374151;font-weight:600;width:48%">{key}</td>
-                <td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#111827;{bold}">{val}</td>
-            </tr>'''
+            bold = "font-weight:700;" if key in ["kWh(I)", "Latest Alert"] else ""
+            rows_html += f'<tr style="background:{bg}"><td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#374151;font-weight:600;width:48%">{key}</td><td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#111827;{bold}">{val}</td></tr>'
             shown.add(key)
-    # Remaining rows
     for key, val in data.items():
         if key not in shown:
-            rows_html += f'''<tr>
-                <td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280;width:48%">{key}</td>
-                <td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#374151">{val}</td>
-            </tr>'''
+            rows_html += f'<tr><td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280;width:48%">{key}</td><td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#374151">{val}</td></tr>'
 
     kwh = data.get("kWh(I)", "N/A")
     alert = data.get("Latest Alert", "None")
     alert_color = "#dc2626" if alert and alert != "None" else "#16a34a"
 
     return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif">
-<div style="max-width:640px;margin:24px auto;background:#f3f4f6">
-
-  <!-- Header -->
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif">
+<div style="max-width:640px;margin:24px auto">
   <div style="background:linear-gradient(135deg,#15803d,#16a34a);border-radius:12px 12px 0 0;padding:24px 28px">
-    <h1 style="color:white;margin:0;font-size:22px;font-weight:700">⚡ Meter Hourly Snapshot</h1>
-    <p style="color:#bbf7d0;margin:8px 0 0;font-size:14px">Modem: TGNP00106 &nbsp;•&nbsp; {timestamp}</p>
+    <h1 style="color:white;margin:0;font-size:22px">⚡ Meter Hourly Snapshot</h1>
+    <p style="color:#bbf7d0;margin:8px 0 0;font-size:14px">TGNP00106 &nbsp;•&nbsp; {timestamp}</p>
   </div>
-
-  <!-- Summary bar -->
-  <div style="background:#166534;padding:14px 28px;display:flex;gap:32px">
+  <div style="background:#166534;padding:14px 28px;display:flex;gap:40px">
     <div>
       <div style="color:#86efac;font-size:11px;text-transform:uppercase;letter-spacing:1px">kWh Import</div>
-      <div style="color:white;font-size:20px;font-weight:700;margin-top:2px">{kwh}</div>
+      <div style="color:white;font-size:22px;font-weight:700;margin-top:2px">{kwh}</div>
     </div>
     <div>
       <div style="color:#86efac;font-size:11px;text-transform:uppercase;letter-spacing:1px">Latest Alert</div>
-      <div style="color:{alert_color};font-size:13px;font-weight:600;margin-top:4px;background:white;padding:2px 8px;border-radius:4px">{alert[:60] if alert else 'None'}</div>
+      <div style="color:{alert_color};font-size:12px;font-weight:600;margin-top:4px;background:white;padding:3px 10px;border-radius:4px;display:inline-block">{str(alert)[:70]}</div>
     </div>
   </div>
-
-  <!-- Table -->
   <div style="background:white;border-radius:0 0 12px 12px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08)">
-    <table style="width:100%;border-collapse:collapse">
-      {rows_html}
-    </table>
+    <table style="width:100%;border-collapse:collapse">{rows_html}</table>
   </div>
-
-  <!-- Footer -->
-  <p style="text-align:center;color:#9ca3af;font-size:11px;margin:16px 0 0">
-    Watchr Auto-Report &nbsp;•&nbsp; Next email in 1 hour &nbsp;•&nbsp; {timestamp}
+  <p style="text-align:center;color:#9ca3af;font-size:11px;margin:16px 0">
+    Watchr Auto-Report &nbsp;•&nbsp; Next email in ~1 hour &nbsp;•&nbsp; {timestamp}
   </p>
 </div>
 </body></html>"""
 
-# ── Hourly Meter Email Thread ──
-last_email_time = [0]
-
+# ── Hourly meter email thread ──
 def meter_email_scheduler():
-    time.sleep(15)  # wait for server startup
+    time.sleep(15)
     while True:
         try:
-            print(f"[METER] Fetching data at {datetime.now().strftime('%H:%M:%S')}")
+            print(f"[METER] Fetching at {datetime.now().strftime('%H:%M:%S')}")
             data = fetch_meter_data()
             print(f"[METER] Got {len(data)} fields")
             timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
@@ -777,15 +769,14 @@ def meter_email_scheduler():
             subject = f"⚡ Meter Report {timestamp} | kWh: {kwh}"
             html = build_email_html(data, timestamp)
             ok = send_email(subject, html)
-            last_email_time[0] = time.time()
-            print(f"[METER] Email sent: {ok}")
+            print(f"[METER] Email result: {ok}")
         except Exception as e:
             print(f"[METER ERROR] {e}")
-        time.sleep(3600)  # every 1 hour
+        time.sleep(3600)
 
 threading.Thread(target=meter_email_scheduler, daemon=True).start()
 
-# ── General website monitor ──
+# ── General monitor ──
 def fetch_content(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=12)
@@ -826,23 +817,18 @@ def check_monitor(m):
         m["status"] = "changed"
         m["changesCount"] = m.get("changesCount", 0) + 1
         m["history"] = ([datetime.now().isoformat()] + m.get("history", []))[:20]
-        db["activity"].insert(0, {
-            "type": "changed", "name": m["name"],
-            "time": datetime.now().isoformat(), "color": "#d97706"
-        })
-        # Send change alert
-        subject = f"🔔 Change: {m['name']} — {datetime.now().strftime('%d-%m-%Y %H:%M')}"
+        db["activity"].insert(0, {"type":"changed","name":m["name"],"time":datetime.now().isoformat(),"color":"#d97706"})
+        subject = f"🔔 Change: {m['name']}"
         html = f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
           <div style="background:#d97706;padding:20px;border-radius:10px 10px 0 0">
             <h2 style="color:white;margin:0">🔔 Change Detected!</h2>
-            <p style="color:#fef3c7;margin:6px 0 0;font-size:14px">{m['name']}</p>
+            <p style="color:#fef3c7;margin:6px 0 0">{m['name']}</p>
           </div>
-          <div style="background:white;padding:20px 24px;border-radius:0 0 10px 10px;box-shadow:0 4px 12px rgba(0,0,0,0.1)">
-            <p><b>URL:</b> <a href="{m['url']}">{m['url']}</a></p>
+          <div style="background:white;padding:20px 24px;border-radius:0 0 10px 10px">
+            <p><b>URL:</b> {m['url']}</p>
             <p><b>Time:</b> {datetime.now().strftime('%d-%m-%Y %H:%M')}</p>
-            <pre style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;font-size:12px;overflow-x:auto;white-space:pre-wrap">{m.get('lastDiff','No diff')[:2000]}</pre>
-          </div>
-        </div>"""
+            <pre style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;font-size:12px;white-space:pre-wrap">{m.get('lastDiff','')[:2000]}</pre>
+          </div></div>"""
         send_email(subject, html)
     else:
         m["status"] = "ok"
@@ -887,24 +873,13 @@ def add_monitor():
     m = {
         "id": hashlib.md5(f"{url}{time.time()}".encode()).hexdigest()[:10],
         "name": data.get("name") or url.split("/")[2],
-        "url": url,
-        "freq": data.get("freq", "15m"),
-        "type": data.get("type", "full"),
-        "status": "checking",
-        "lastChecked": None,
-        "contentHash": None,
-        "contentSnapshot": None,
-        "lastDiff": None,
-        "changesCount": 0,
-        "history": [],
-        "paused": False,
-        "tags": data.get("tags", [])
+        "url": url, "freq": data.get("freq","15m"), "type": data.get("type","full"),
+        "status": "checking", "lastChecked": None, "contentHash": None,
+        "contentSnapshot": None, "lastDiff": None, "changesCount": 0,
+        "history": [], "paused": False, "tags": data.get("tags",[])
     }
     db["monitors"].insert(0, m)
-    db["activity"].insert(0, {
-        "type": "added", "name": m["name"],
-        "time": datetime.now().isoformat(), "color": "#2563eb"
-    })
+    db["activity"].insert(0, {"type":"added","name":m["name"],"time":datetime.now().isoformat(),"color":"#2563eb"})
     save_data(db)
     threading.Thread(target=lambda: check_monitor(m), daemon=True).start()
     return jsonify(m)
@@ -935,28 +910,26 @@ def delete_monitor(mid):
 
 @app.route("/api/test-email", methods=["GET", "POST"])
 def test_email():
-    try:
-        timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-        # Send test email immediately without fetching meter
-        test_data = {
-            "Modem Serial Number": "TGNP00106",
-            "Status": "Test Email — Server is running!",
-            "Time": timestamp,
-            "kWh(I)": "Fetching from meter...",
-            "Note": "Hourly emails will have real meter data"
-        }
-        subject = f"✅ Watchr Test Email — {timestamp}"
-        html = build_email_html(test_data, timestamp)
-        ok = send_email(subject, html)
-        # Also fetch meter in background
-        def bg_fetch():
+    def bg():
+        try:
+            timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+            # Step 1: instant test email
+            test_data = {
+                "Status": "✅ Watchr is running!",
+                "Server Time": timestamp,
+                "Meter URL": METER_URL,
+                "Note": "Real meter data will follow in ~15 seconds"
+            }
+            send_email(f"✅ Watchr Test — {timestamp}", build_email_html(test_data, timestamp))
+            # Step 2: real meter data
+            time.sleep(2)
             data = fetch_meter_data()
-            ts = datetime.now().strftime("%d-%m-%Y %H:%M")
-            send_email(f"⚡ Meter Data — {ts}", build_email_html(data, ts))
-        threading.Thread(target=bg_fetch, daemon=True).start()
-        return jsonify({"sent": ok, "message": "Test email sent! Real meter data email coming in ~15 seconds"})
-    except Exception as e:
-        return jsonify({"sent": False, "error": str(e)})
+            ts2 = datetime.now().strftime("%d-%m-%Y %H:%M")
+            send_email(f"⚡ Meter Data — {ts2} | kWh: {data.get('kWh(I)','N/A')}", build_email_html(data, ts2))
+        except Exception as e:
+            print(f"[TEST EMAIL ERROR] {e}")
+    threading.Thread(target=bg, daemon=True).start()
+    return jsonify({"sent": True, "message": "2 emails sending — check inbox in 30 seconds!"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
