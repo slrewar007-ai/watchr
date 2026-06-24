@@ -649,12 +649,25 @@ db = load_data()
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
 
 # ── Send Email via Resend ──
-def send_email(subject, html_body):
+def send_email(subject, html_body, monitor_id=None):
     try:
+        payload = {
+            "from": EMAIL_SENDER,
+            "to": [EMAIL_RECEIVER],
+            "subject": subject,
+            "html": html_body,
+        }
+        # Add unique headers so each monitor email is a separate thread
+        if monitor_id:
+            payload["headers"] = {
+                "X-Monitor-ID": monitor_id,
+                "References": f"<watchr-{monitor_id}@monitor>",
+                "Message-ID": f"<watchr-{monitor_id}-{int(time.time())}@monitor>"
+            }
         r = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json={"from": EMAIL_SENDER, "to": [EMAIL_RECEIVER], "subject": subject, "html": html_body},
+            json=payload,
             timeout=15
         )
         result = r.json()
@@ -758,9 +771,10 @@ def hourly_snapshot_scheduler():
                     print(f"[HOURLY] Fetching {m['url']}")
                     page_data = fetch_page(m["url"])
                     timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-                    subject = f"📸 {m['name']} — Snapshot {timestamp}"
+                    subject = f"📸 [{m['name']}] Hourly {timestamp} | {m['url'].split('?')[-1][:40] if '?' in m['url'] else m['url'].split('/')[-1][:40]}"
                     html = build_snapshot_email(m, page_data, timestamp)
-                    send_email(subject, html)
+                    send_email(subject, html, monitor_id=m["id"])
+                    time.sleep(3)
                     print(f"[HOURLY] Done: {m['name']}")
                 except Exception as e:
                     print(f"[HOURLY ERROR] {m['name']}: {e}")
@@ -900,9 +914,9 @@ def test_email():
                     try:
                         page_data = fetch_page(m["url"])
                         timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-                        send_email(f"📸 {m['name']} — {timestamp}",
-                            build_snapshot_email(m, page_data, timestamp))
-                        import time as t; t.sleep(2)
+                        subject = f"📸 [{m['name']}] Snapshot {timestamp} | {m['url'].split('/')[-1][:30]}"
+                        send_email(subject, build_snapshot_email(m, page_data, timestamp), monitor_id=m["id"])
+                        import time as t; t.sleep(3)
                     except Exception as ex:
                         print(f"[TEST ERROR] {m['name']}: {ex}")
         except Exception as e:
