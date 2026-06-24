@@ -895,12 +895,16 @@ def test_email():
                     <p style="color:#6b7280">Add a monitor from the dashboard — its hourly snapshot will appear here!</p>
                     </div>""")
             else:
-                # Send snapshot for first monitor
-                m = monitors[0]
-                page_data = fetch_page(m["url"])
-                timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-                send_email(f"📸 Test: {m['name']} — {timestamp}",
-                    build_snapshot_email(m, page_data, timestamp))
+                # Send snapshot for ALL monitors
+                for m in monitors:
+                    try:
+                        page_data = fetch_page(m["url"])
+                        timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+                        send_email(f"📸 {m['name']} — {timestamp}",
+                            build_snapshot_email(m, page_data, timestamp))
+                        import time as t; t.sleep(2)
+                    except Exception as ex:
+                        print(f"[TEST ERROR] {m['name']}: {ex}")
         except Exception as e:
             print(f"[TEST ERROR] {e}")
     threading.Thread(target=bg, daemon=True).start()
