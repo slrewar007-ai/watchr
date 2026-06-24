@@ -758,6 +758,80 @@ def build_snapshot_email(monitor, page_data, timestamp):
 </div>
 </body></html>"""
 
+
+# ── PF Alert Check ──
+def check_pf_alert(m, page_data):
+    try:
+        tables = page_data.get("tables", [])
+        pf_fields = {
+            "R-PH PF": None, "Y-PH PF": None,
+            "B-PH PF": None, "Avg. PF": None, "Avg_PF": None
+        }
+        for table in tables:
+            for key, val in table:
+                if key in pf_fields:
+                    try:
+                        pf_fields[key] = float(val)
+                    except:
+                        pass
+
+        alerts = []
+        for field, value in pf_fields.items():
+            if value is not None:
+                abs_val = abs(value)
+                if abs_val < 0.95:
+                    alerts.append((field, value, abs_val))
+
+        if alerts:
+            timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+            rows_html = ""
+            for field, value, abs_val in alerts:
+                rows_html += f"""<tr>
+                    <td style="padding:12px 16px;border-bottom:1px solid #fee2e2;font-weight:600;color:#374151">{field}</td>
+                    <td style="padding:12px 16px;border-bottom:1px solid #fee2e2;color:#dc2626;font-weight:700;font-size:18px">{value}</td>
+                    <td style="padding:12px 16px;border-bottom:1px solid #fee2e2;color:#dc2626">⚠ Below 0.95!</td>
+                </tr>"""
+
+            html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif">
+<div style="max-width:640px;margin:24px auto">
+  <div style="background:linear-gradient(135deg,#dc2626,#b91c1c);border-radius:12px 12px 0 0;padding:22px 28px">
+    <h1 style="color:white;margin:0;font-size:22px">⚠️ Power Factor Alert!</h1>
+    <p style="color:#fecaca;margin:8px 0 0;font-size:14px">{m['name']} &nbsp;•&nbsp; {timestamp}</p>
+  </div>
+  <div style="background:#991b1b;padding:12px 28px">
+    <div style="color:#fca5a5;font-size:13px">URL: {m['url']}</div>
+    <div style="color:white;font-size:13px;margin-top:4px">⚠ Power Factor dropped below <b>0.95</b> threshold!</div>
+  </div>
+  <div style="background:white;border-radius:0 0 12px 12px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08)">
+    <table style="width:100%;border-collapse:collapse">
+      <tr style="background:#fee2e2">
+        <th style="padding:10px 16px;text-align:left;color:#991b1b;font-size:12px;text-transform:uppercase">Parameter</th>
+        <th style="padding:10px 16px;text-align:left;color:#991b1b;font-size:12px;text-transform:uppercase">Value</th>
+        <th style="padding:10px 16px;text-align:left;color:#991b1b;font-size:12px;text-transform:uppercase">Status</th>
+      </tr>
+      {rows_html}
+    </table>
+    <div style="padding:16px 20px;background:#fff7ed;border-top:1px solid #fed7aa">
+      <p style="margin:0;color:#92400e;font-size:13px">
+        💡 <b>Action Required:</b> Check capacitor bank / load conditions at the meter site.
+      </p>
+    </div>
+  </div>
+  <p style="text-align:center;color:#9ca3af;font-size:11px;margin:16px 0">
+    Watchr PF Alert &nbsp;•&nbsp; {timestamp}
+  </p>
+</div>
+</body></html>"""
+            subject = f"⚠️ PF Alert! {m['name']} — {', '.join([f'{f}={v}' for f,v,_ in alerts])} | {timestamp}"
+            send_email(subject, html, monitor_id=f"pf-alert-{m['id']}")
+            print(f"[PF ALERT] Sent for {m['name']}: {alerts}")
+        else:
+            print(f"[PF OK] {m['name']} — all PF values above 0.95")
+    except Exception as e:
+        print(f"[PF CHECK ERROR] {e}")
+
 # ── Hourly snapshot for ALL monitors ──
 def hourly_snapshot_scheduler():
     time.sleep(20)
@@ -774,6 +848,8 @@ def hourly_snapshot_scheduler():
                     subject = f"📸 [{m['name']}] Hourly {timestamp} | {m['url'].split('?')[-1][:40] if '?' in m['url'] else m['url'].split('/')[-1][:40]}"
                     html = build_snapshot_email(m, page_data, timestamp)
                     send_email(subject, html, monitor_id=m["id"])
+                    # Check PF alert
+                    check_pf_alert(m, page_data)
                     time.sleep(3)
                     print(f"[HOURLY] Done: {m['name']}")
                 except Exception as e:
@@ -916,6 +992,7 @@ def test_email():
                         timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
                         subject = f"📸 [{m['name']}] Snapshot {timestamp} | {m['url'].split('/')[-1][:30]}"
                         send_email(subject, build_snapshot_email(m, page_data, timestamp), monitor_id=m["id"])
+                        check_pf_alert(m, page_data)
                         import time as t; t.sleep(3)
                     except Exception as ex:
                         print(f"[TEST ERROR] {m['name']}: {ex}")
