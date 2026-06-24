@@ -632,7 +632,6 @@ app = Flask(__name__)
 RESEND_API_KEY = "re_ZxbTs63r_Q588n3YBBwW6QsJQLdQHF9HV"
 EMAIL_SENDER   = "onboarding@resend.dev"
 EMAIL_RECEIVER = "slrewar007@gmail.com"
-METER_URL      = "https://tgnpdcl.bestinfra.app/mdm/ModemDetails.jsp?modem_sl_no=TGNP00106"
 
 DATA_FILE = "monitors.json"
 
@@ -649,26 +648,18 @@ def save_data(data):
 db = load_data()
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}
 
-# ── Send Email via Resend HTTP API ──
+# ── Send Email via Resend ──
 def send_email(subject, html_body):
     try:
         r = requests.post(
             "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "from": EMAIL_SENDER,
-                "to": [EMAIL_RECEIVER],
-                "subject": subject,
-                "html": html_body
-            },
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_SENDER, "to": [EMAIL_RECEIVER], "subject": subject, "html": html_body},
             timeout=15
         )
         result = r.json()
-        if r.status_code == 200 or r.status_code == 201:
-            print(f"[EMAIL OK] {subject} | id: {result.get('id')}")
+        if r.status_code in [200, 201]:
+            print(f"[EMAIL OK] {subject}")
             return True
         else:
             print(f"[EMAIL ERROR] {r.status_code} — {result}")
@@ -677,97 +668,109 @@ def send_email(subject, html_body):
         print(f"[EMAIL EXCEPTION] {e}")
         return False
 
-# ── Fetch meter data ──
-def fetch_meter_data():
+# ── Fetch page content as text + table ──
+def fetch_page(url):
     try:
-        r = requests.get(METER_URL, headers=HEADERS, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        rows = {}
-        for tr in soup.find_all("tr"):
-            tds = tr.find_all("td")
-            if len(tds) >= 2:
-                key = tds[0].get_text(strip=True)
-                val = tds[1].get_text(strip=True)
-                if key and val and len(key) < 60:
-                    rows[key] = val
-        if not rows:
-            rows["Note"] = "Page loaded but no table data found"
-        return rows
+        # Extract tables
+        tables = []
+        for table in soup.find_all("table"):
+            rows = []
+            for tr in table.find_all("tr"):
+                tds = tr.find_all(["td", "th"])
+                if len(tds) >= 2:
+                    key = tds[0].get_text(strip=True)
+                    val = tds[1].get_text(strip=True)
+                    if key and len(key) < 80:
+                        rows.append((key, val))
+            if rows:
+                tables.append(rows)
+        # Plain text fallback
+        for tag in soup(["script", "style", "nav", "footer"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        return {"tables": tables, "text": text[:3000]}
     except Exception as e:
-        return {"Error": str(e)}
+        return {"tables": [], "text": f"Error: {e}"}
 
-# ── Build Email HTML ──
-def build_email_html(data, timestamp):
-    important = [
-        "Modem Serial Number", "Meter Serial Number",
-        "Meter Date & Time", "Modem Date & Time", "Latest Alert",
-        "kWh(I)", "kVArh_Ld(I)", "kVArh_Lag(I)", "kVAh(I)",
-        "R-PH Voltage", "Y-PH Voltage", "B-PH Voltage",
-        "R-PH Current", "Y-PH Current", "B-PH Current",
-        "R-PH PF", "Y-PH PF", "B-PH PF", "Avg_PF",
-        "kWh(E)", "kVArh_Ld(E)", "kVArh_Lag(E)", "kVAh(E)"
-    ]
-    rows_html = ""
-    shown = set()
-    for key in important:
-        if key in data:
-            val = data[key]
-            bg = "#fff8e1" if "Alert" in key else "#f0fdf4" if any(x in key for x in ["kWh","kVA","kVAr"]) else "#ffffff"
-            bold = "font-weight:700;" if key in ["kWh(I)", "Latest Alert"] else ""
-            rows_html += f'<tr style="background:{bg}"><td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#374151;font-weight:600;width:48%">{key}</td><td style="padding:9px 16px;border-bottom:1px solid #e5e7eb;color:#111827;{bold}">{val}</td></tr>'
-            shown.add(key)
-    for key, val in data.items():
-        if key not in shown:
-            rows_html += f'<tr><td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#6b7280;width:48%">{key}</td><td style="padding:7px 16px;border-bottom:1px solid #f3f4f6;color:#374151">{val}</td></tr>'
+# ── Build snapshot email ──
+def build_snapshot_email(monitor, page_data, timestamp):
+    name = monitor["name"]
+    url  = monitor["url"]
+    tables = page_data.get("tables", [])
+    text   = page_data.get("text", "")
 
-    kwh = data.get("kWh(I)", "N/A")
-    alert = data.get("Latest Alert", "None")
-    alert_color = "#dc2626" if alert and alert != "None" else "#16a34a"
+    # Build table HTML
+    table_html = ""
+    if tables:
+        for tbl in tables[:3]:  # max 3 tables
+            table_html += '<table style="width:100%;border-collapse:collapse;margin-bottom:16px">'
+            for i, (key, val) in enumerate(tbl):
+                bg = "#f9fafb" if i % 2 == 0 else "#ffffff"
+                table_html += f'<tr style="background:{bg}"><td style="padding:8px 14px;border-bottom:1px solid #e5e7eb;color:#374151;font-weight:600;width:45%">{key}</td><td style="padding:8px 14px;border-bottom:1px solid #e5e7eb;color:#111827">{val}</td></tr>'
+            table_html += "</table>"
+    else:
+        # Plain text in pre
+        table_html = f'<pre style="background:#f9fafb;padding:16px;border-radius:8px;font-size:12px;white-space:pre-wrap;color:#374151">{text[:2000]}</pre>'
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif">
-<div style="max-width:640px;margin:24px auto">
-  <div style="background:linear-gradient(135deg,#15803d,#16a34a);border-radius:12px 12px 0 0;padding:24px 28px">
-    <h1 style="color:white;margin:0;font-size:22px">⚡ Meter Hourly Snapshot</h1>
-    <p style="color:#bbf7d0;margin:8px 0 0;font-size:14px">TGNP00106 &nbsp;•&nbsp; {timestamp}</p>
+<div style="max-width:660px;margin:24px auto">
+
+  <div style="background:linear-gradient(135deg,#2563eb,#1d4ed8);border-radius:12px 12px 0 0;padding:22px 28px">
+    <h1 style="color:white;margin:0;font-size:20px">📸 Hourly Snapshot</h1>
+    <p style="color:#bfdbfe;margin:6px 0 0;font-size:14px">{name}</p>
   </div>
-  <div style="background:#166534;padding:14px 28px">
-    <table style="width:100%"><tr>
-      <td><div style="color:#86efac;font-size:11px;text-transform:uppercase;letter-spacing:1px">kWh Import</div>
-      <div style="color:white;font-size:22px;font-weight:700;margin-top:2px">{kwh}</div></td>
-      <td><div style="color:#86efac;font-size:11px;text-transform:uppercase;letter-spacing:1px">Latest Alert</div>
-      <div style="margin-top:4px"><span style="color:{alert_color};font-size:12px;font-weight:600;background:white;padding:3px 10px;border-radius:4px">{str(alert)[:70]}</span></div></td>
-    </tr></table>
+
+  <div style="background:#1e40af;padding:12px 28px;display:flex;gap:20px">
+    <div>
+      <div style="color:#93c5fd;font-size:10px;text-transform:uppercase;letter-spacing:1px">URL</div>
+      <div style="color:white;font-size:12px;margin-top:2px;font-family:monospace">{url[:60]}</div>
+    </div>
+    <div>
+      <div style="color:#93c5fd;font-size:10px;text-transform:uppercase;letter-spacing:1px">Time</div>
+      <div style="color:white;font-size:13px;font-weight:600;margin-top:2px">{timestamp}</div>
+    </div>
   </div>
-  <div style="background:white;border-radius:0 0 12px 12px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08)">
-    <table style="width:100%;border-collapse:collapse">{rows_html}</table>
+
+  <div style="background:white;border-radius:0 0 12px 12px;padding:20px 24px;box-shadow:0 4px 12px rgba(0,0,0,0.08)">
+    {table_html}
   </div>
+
   <p style="text-align:center;color:#9ca3af;font-size:11px;margin:16px 0">
-    Watchr Auto-Report &nbsp;•&nbsp; Next email in ~1 hour &nbsp;•&nbsp; {timestamp}
+    Watchr Hourly Report &nbsp;•&nbsp; Next snapshot in ~1 hour &nbsp;•&nbsp; {timestamp}
   </p>
 </div>
 </body></html>"""
 
-# ── Hourly meter email ──
-def meter_email_scheduler():
-    time.sleep(15)
+# ── Hourly snapshot for ALL monitors ──
+def hourly_snapshot_scheduler():
+    time.sleep(20)
     while True:
         try:
-            print(f"[METER] Fetching at {datetime.now().strftime('%H:%M:%S')}")
-            data = fetch_meter_data()
-            print(f"[METER] Got {len(data)} fields")
-            timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-            kwh = data.get("kWh(I)", "N/A")
-            ok = send_email(f"⚡ Meter Report {timestamp} | kWh: {kwh}", build_email_html(data, timestamp))
-            print(f"[METER] Email sent: {ok}")
+            monitors = db.get("monitors", [])
+            active = [m for m in monitors if not m.get("paused")]
+            print(f"[HOURLY] Sending snapshots for {len(active)} monitors")
+            for m in active:
+                try:
+                    print(f"[HOURLY] Fetching {m['url']}")
+                    page_data = fetch_page(m["url"])
+                    timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+                    subject = f"📸 {m['name']} — Snapshot {timestamp}"
+                    html = build_snapshot_email(m, page_data, timestamp)
+                    send_email(subject, html)
+                    print(f"[HOURLY] Done: {m['name']}")
+                except Exception as e:
+                    print(f"[HOURLY ERROR] {m['name']}: {e}")
         except Exception as e:
-            print(f"[METER ERROR] {e}")
+            print(f"[HOURLY MAIN ERROR] {e}")
         time.sleep(3600)
 
-threading.Thread(target=meter_email_scheduler, daemon=True).start()
+threading.Thread(target=hourly_snapshot_scheduler, daemon=True).start()
 
-# ── General monitor ──
+# ── General monitor check (for change detection) ──
 def fetch_content(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=12)
@@ -805,10 +808,6 @@ def check_monitor(m):
         m["changesCount"] = m.get("changesCount", 0) + 1
         m["history"] = ([datetime.now().isoformat()] + m.get("history", []))[:20]
         db["activity"].insert(0, {"type":"changed","name":m["name"],"time":datetime.now().isoformat(),"color":"#d97706"})
-        send_email(f"🔔 Change: {m['name']}", f"""<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-          <div style="background:#d97706;padding:20px;border-radius:10px 10px 0 0"><h2 style="color:white;margin:0">🔔 Change Detected!</h2><p style="color:#fef3c7;margin:6px 0 0">{m['name']}</p></div>
-          <div style="background:white;padding:20px 24px;border-radius:0 0 10px 10px"><p><b>URL:</b> {m['url']}</p><p><b>Time:</b> {datetime.now().strftime('%d-%m-%Y %H:%M')}</p>
-          <pre style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;font-size:12px;white-space:pre-wrap">{m.get('lastDiff','')[:2000]}</pre></div></div>""")
     else:
         m["status"] = "ok"
     db["activity"] = db["activity"][:50]
@@ -847,10 +846,11 @@ def add_monitor():
     if len(db["monitors"]) >= 25:
         return jsonify({"error": "Free plan limit: 25 monitors"}), 400
     m = {"id": hashlib.md5(f"{url}{time.time()}".encode()).hexdigest()[:10],
-         "name": data.get("name") or url.split("/")[2], "url": url,
-         "freq": data.get("freq","15m"), "type": data.get("type","full"),
-         "status": "checking", "lastChecked": None, "contentHash": None,
-         "contentSnapshot": None, "lastDiff": None, "changesCount": 0,
+         "name": data.get("name") or url.split("/")[2],
+         "url": url, "freq": data.get("freq","15m"),
+         "status": "checking", "lastChecked": None,
+         "contentHash": None, "contentSnapshot": None,
+         "lastDiff": None, "changesCount": 0,
          "history": [], "paused": False, "tags": data.get("tags",[])}
     db["monitors"].insert(0, m)
     db["activity"].insert(0, {"type":"added","name":m["name"],"time":datetime.now().isoformat(),"color":"#2563eb"})
@@ -884,17 +884,27 @@ def delete_monitor(mid):
 def test_email():
     def bg():
         try:
-            timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
-            send_email(f"✅ Watchr Test — {timestamp}",
-                build_email_html({"Status":"✅ Server running!","Time":timestamp,"Note":"Real meter data below..."}, timestamp))
-            time.sleep(2)
-            data = fetch_meter_data()
-            ts2 = datetime.now().strftime("%d-%m-%Y %H:%M")
-            send_email(f"⚡ Meter Data — {ts2} | kWh: {data.get('kWh(I)','N/A')}", build_email_html(data, ts2))
+            monitors = db.get("monitors", [])
+            if not monitors:
+                # Send test with dummy data
+                timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+                send_email(f"✅ Watchr Test — {timestamp}",
+                    f"""<div style="font-family:Arial,sans-serif;padding:24px;max-width:600px;margin:0 auto;background:white;border-radius:12px">
+                    <h2>✅ Watchr is working!</h2>
+                    <p>Server time: {timestamp}</p>
+                    <p style="color:#6b7280">Add a monitor from the dashboard — its hourly snapshot will appear here!</p>
+                    </div>""")
+            else:
+                # Send snapshot for first monitor
+                m = monitors[0]
+                page_data = fetch_page(m["url"])
+                timestamp = datetime.now().strftime("%d-%m-%Y %H:%M")
+                send_email(f"📸 Test: {m['name']} — {timestamp}",
+                    build_snapshot_email(m, page_data, timestamp))
         except Exception as e:
             print(f"[TEST ERROR] {e}")
     threading.Thread(target=bg, daemon=True).start()
-    return jsonify({"sent": True, "message": "Emails sending — check inbox in 30 seconds!"})
+    return jsonify({"sent": True, "message": "Test email sending — check inbox in 30 seconds!"})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
